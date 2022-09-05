@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"reflect"
 
 	"golang.org/x/tools/go/analysis"
 
@@ -14,11 +15,12 @@ import (
 
 // Analyzer checks cyclomatic complexity of defined functions and reports if it exceeded the given limit.
 var Analyzer = &analysis.Analyzer{
-	Name:      "cyclomatic",
-	Doc:       `check cyclomatic complexity of functions.`,
-	Requires:  []*analysis.Analyzer{prodinspect.Analyzer},
-	Run:       run,
-	FactTypes: []analysis.Fact{new(complexity)},
+	Name:       "cyclomatic",
+	Doc:        `check cyclomatic complexity of functions.`,
+	Requires:   []*analysis.Analyzer{prodinspect.Analyzer},
+	ResultType: reflect.TypeOf(new(map[*ast.Ident]Complexity)),
+	Run:        run,
+	FactTypes:  []analysis.Fact{new(Complexity)},
 }
 
 var limit int // -limit flag
@@ -34,7 +36,8 @@ func init() {
 func run(pass *analysis.Pass) (interface{}, error) {
 	inspect := pass.ResultOf[prodinspect.Analyzer].(*prodinspect.Inspector)
 
-	var c complexity
+	acc := make(map[*ast.Ident]Complexity)
+	var c Complexity
 	inspect.Nodes([]ast.Node{
 		(*ast.FuncDecl)(nil),
 		(*ast.IfStmt)(nil),
@@ -48,26 +51,25 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return true
 		}
 
-		c.report(n, pass)
+		c.report(n, pass, acc)
 		return true
 	})
-
-	return nil, nil
+	return &acc, nil
 }
 
-type complexity int
+type Complexity int
 
-func (c *complexity) AFact()         {}
-func (c *complexity) String() string { return fmt.Sprintf("complexity(%d)", *c) }
+func (c *Complexity) AFact()         {}
+func (c *Complexity) String() string { return fmt.Sprintf("complexity(%d)", *c) }
 
-func (c *complexity) add(n ast.Node) {
+func (c *Complexity) add(n ast.Node) {
 	switch n := n.(type) {
 	case *ast.FuncDecl:
 		*c = 1
 	case *ast.IfStmt, *ast.ForStmt, *ast.CommClause:
 		*c++
 	case *ast.CaseClause:
-		*c += complexity(len(n.List))
+		*c += Complexity(len(n.List))
 	case *ast.BinaryExpr:
 		switch n.Op {
 		case token.LAND, token.LOR:
@@ -76,11 +78,13 @@ func (c *complexity) add(n ast.Node) {
 	}
 }
 
-func (c *complexity) report(n ast.Node, pass *analysis.Pass) {
+func (c *Complexity) report(n ast.Node, pass *analysis.Pass, acc map[*ast.Ident]Complexity) {
 	fd, ok := n.(*ast.FuncDecl)
 	if !ok {
 		return
 	}
+
+	acc[fd.Name] = *c
 
 	o := pass.TypesInfo.Defs[fd.Name]
 	f := o.(*types.Func)
@@ -88,7 +92,7 @@ func (c *complexity) report(n ast.Node, pass *analysis.Pass) {
 	d := *c
 	pass.ExportObjectFact(f, &d)
 
-	if d > complexity(limit) {
+	if d > Complexity(limit) {
 		pass.Reportf(n.Pos(), "cyclomatic complexity of %s exceeded limit %d > %d", f.Name(), d, limit)
 	}
 }
